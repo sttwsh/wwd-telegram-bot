@@ -1,9 +1,9 @@
 import os
-import time
 import json
+import asyncio
+import time
 import feedparser
 from telegram import Bot
-from apscheduler.schedulers.blocking import BlockingScheduler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL_ID = os.environ.get("CHANNEL_ID")
@@ -12,7 +12,7 @@ STATE_FILE = "state.json"
 
 # RSS WWD (можно потом добавить больше)
 FEEDS = [
-    "https://wwd.com/feed/"
+    "https://wwd.com/feed/",
 ]
 
 def load_state():
@@ -26,12 +26,12 @@ def save_state(state):
         json.dump(state, f, ensure_ascii=False)
 
 def entry_id(entry):
-    return entry.get("id") or entry.get("link")
+    return entry.get("id") or entry.get("guid") or entry.get("link")
 
 def format_post(entry):
-    title = entry.get("title", "").strip()
-    link = entry.get("link", "").strip()
-    summary = entry.get("summary", "").strip()
+    title = (entry.get("title") or "").strip()
+    link = (entry.get("link") or "").strip()
+    summary = (entry.get("summary") or "").strip()
 
     text = f"📰 <b>{title}</b>\n\n"
     if summary:
@@ -39,36 +39,49 @@ def format_post(entry):
     text += link
     return text
 
-def job():
+async def run_once():
     if not BOT_TOKEN or not CHANNEL_ID:
-        return
+        raise RuntimeError("Не заданы BOT_TOKEN или CHANNEL_ID в Secrets.")
 
     bot = Bot(token=BOT_TOKEN)
+
     state = load_state()
     posted = set(state.get("posted", []))
+
+    new_count = 0
 
     for feed_url in FEEDS:
         feed = feedparser.parse(feed_url)
 
-        for entry in reversed(feed.entries):
+        # идём от старых к новым, чтобы красиво постилось по порядку
+        for entry in reversed(getattr(feed, "entries", [])):
             eid = entry_id(entry)
             if not eid or eid in posted:
                 continue
 
-            bot.send_message(
+            text = format_post(entry)
+
+            # ВАЖНО: await (иначе твоя текущая ошибка)
+            await bot.send_message(
                 chat_id=CHANNEL_ID,
-                text=format_post(entry),
+                text=text,
                 parse_mode="HTML",
                 disable_web_page_preview=False,
             )
 
             posted.add(eid)
-            time.sleep(1.5)
+            new_count += 1
+
+            # лёгкая пауза, чтобы не упереться в лимиты
+            await asyncio.sleep(1.2)
 
     state["posted"] = list(posted)[-2000:]
     save_state(state)
 
+    print(f"Posted: {new_count}")
+
+def main():
+    asyncio.run(run_once())
+
 if __name__ == "__main__":
-    scheduler = BlockingScheduler()
-    scheduler.add_job(job, "interval", minutes=15)
-    scheduler.start()
+    main()
